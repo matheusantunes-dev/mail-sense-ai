@@ -80,7 +80,9 @@ def analyse_with_openai(email_text: str) -> EmailAIResult:
     # Isso facilita parse e deixa o sistema mais robusto.
     user_prompt = f"""
 Você vai analisar o e-mail abaixo.
-Também, caso tiver algo sobre suporte, é classificado como "Produtivo", senão é "Improdutivo".
+Também, caso houver algo sobre suporte, é classificado como "Produtivo", senão é "Improdutivo",
+caso houver um email curto, sobre suporte, sem informações de horários, protocolos, classifique como "Produtivo" e
+dê uma resposta breve e educada.
 Responda APENAS com um JSON válido (sem texto fora do JSON), seguindo este formato:
 {{
   "category": "Produtivo" ou "Improdutivo",
