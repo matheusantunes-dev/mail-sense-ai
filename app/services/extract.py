@@ -1,59 +1,55 @@
+# app/services/extract.py
 from __future__ import annotations
 
+from typing import Optional
 from fastapi import UploadFile
-import pdfplumber
-
+import mimetypes
 
 MAX_CHARS_DEFAULT = 20_000
 
+def _clip(text: str, max_chars: int = MAX_CHARS_DEFAULT) -> str:
+    return (text or "").strip()[:max_chars]
 
-def _clip(text: str, max_chars: int) -> str:
-    """Evita mandar texto enorme pra IA e estourar custo/latência."""
-    text = (text or "").strip()
-    return text[:max_chars]
-
-
-async def extract_email_text(
-    upload: UploadFile | None,
-    pasted_text: str | None,
-    max_chars: int = MAX_CHARS_DEFAULT,
-) -> str:
+async def extract_email_text(raw_text: Optional[str] = None, uploaded_file: UploadFile | None = None, max_chars: int = MAX_CHARS_DEFAULT) -> str:
     """
-    Prioridade:
-      1) Se colou texto -> usa texto
-      2) Senão, se enviou arquivo -> extrai do arquivo
+    Extrai texto do corpo ou de um arquivo enviado.
+    - Se raw_text for fornecido (string), retorna ele cortado.
+    - Se uploaded_file for fornecido, tenta extrair texto conforme tipo (txt, eml, pdf).
+    - Caso não consiga, retorna string vazia.
     """
-    if pasted_text and pasted_text.strip():
-        return _clip(pasted_text, max_chars)
+    if raw_text:
+        return _clip(raw_text, max_chars)
 
-    if upload is None:
+    if not uploaded_file:
         return ""
 
-    filename = (upload.filename or "").lower()
+    filename = uploaded_file.filename or ""
+    content = await uploaded_file.read()
+    content_type = uploaded_file.content_type or mimetypes.guess_type(filename)[0] or ""
 
-    if filename.endswith(".txt"):
-        raw = await upload.read()
-        # tenta utf-8, fallback latin-1 (comum em arquivos antigos)
+    # se for pdf, usar pdfplumber se disponível
+    if "pdf" in content_type or filename.lower().endswith(".pdf"):
         try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            text = raw.decode("latin-1", errors="replace")
-        return _clip(text, max_chars)
+            import pdfplumber
+            from io import BytesIO
+            text_parts = []
+            with pdfplumber.open(BytesIO(content)) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text() or ""
+                    if page_text.strip():
+                        text_parts.append(page_text)
+            return _clip("\n".join(text_parts), max_chars)
+        except Exception:
+            # não conseguiu extrair pdf -> fallback
+            pass
 
-    if filename.endswith(".pdf"):
-        raw = await upload.read()
-        # pdfplumber trabalha com caminho/arquivo-like; aqui usamos bytes
-        # abordagem simples: abrir via BytesIO
-        from io import BytesIO
+    # se for texto simples ou .eml, decodificar como utf-8 (fallback latin1)
+    try:
+        text = content.decode("utf-8")
+    except Exception:
+        try:
+            text = content.decode("latin-1")
+        except Exception:
+            text = ""
 
-        text_parts: list[str] = []
-        with pdfplumber.open(BytesIO(raw)) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text() or ""
-                if page_text.strip():
-                    text_parts.append(page_text)
-
-        return _clip("\n".join(text_parts), max_chars)
-
-    # extensão não suportada
-    return ""
+    return _clip(text, max_chars)
