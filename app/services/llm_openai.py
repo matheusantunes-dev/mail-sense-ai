@@ -4,293 +4,147 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Literal, Optional
+from typing import Literal
 
-# Import do SDK OpenAI feito de forma defensiva:
-# se o pacote não existir ou houver erro, OpenAI ficará como None
+from pydantic import BaseModel, Field
+
+# try to import OpenAI client; keep optional for environments without the package or key
 try:
     from openai import OpenAI
-    _OPENAI_AVAILABLE = True
 except Exception:
-    OpenAI = None  # tipo: ignore
-    _OPENAI_AVAILABLE = False
+    OpenAI = None
 
-from pydantic import BaseModel, Field, ValidationError
-
-
-# ==============================
-# CONTRATO DE RESPOSTA
-# ==============================
 class EmailAIResult(BaseModel):
-    """
-    Modelo fixo que garante consistência no retorno para o resto do sistema.
-    """
     category: Literal["Produtivo", "Improdutivo"]
-    confidence: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(..., ge=0.0, le=1.0)
     short_reason: str
     suggested_reply: str
 
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_KEY")
 
-# ==============================
-# MENSAGENS / SISTEMA
-# ==============================
-_SYSTEM = (
-    "Você é um assistente corporativo do setor financeiro responsável "
-    "por classificar e-mails como Produtivo ou Improdutivo e sugerir resposta objetiva."
-)
-
-
-# ==============================
-# FALLBACKS SEGUROS
-# ==============================
-def _fallback_parse_error() -> EmailAIResult:
-    """
-    Quando a IA falha em retornar JSON ou algo inesperado acontece,
-    somos conservadores: classificamos como Improdutivo e pedimos mais info.
-    """
-    return EmailAIResult(
-        category="Improdutivo",
-        confidence=0.55,
-        short_reason="Falha ao interpretar resposta da IA; fallback aplicado.",
-        suggested_reply=(
-            "Olá! Não consegui entender completamente sua mensagem. "
-            "Poderia confirmar o objetivo do e-mail e fornecer mais detalhes?"
-        ),
-    )
-
-
-# ==============================
-# CLASSIFICADOR LOCAL (SEM IA)
-# ==============================
-def _local_rule_based_classify(email_text: str) -> EmailAIResult:
-    """
-    Classificador determinístico para quando a IA não estiver disponível.
-    Regras conservadoras para reduzir falsos-positivos (improdutivas marcadas
-    como produtivas).
-    """
-    text = (email_text or "").strip()
-    low_text = text.lower()
-
-    # Mensagem vazia ou muito curta -> improdutivo
-    if not text or len(low_text) < 5:
-        return EmailAIResult(
-            category="Improdutivo",
-            confidence=0.95,
-            short_reason="Mensagem vazia ou muito curta.",
-            suggested_reply="",
-        )
-
-    # Spam / marketing detectado
-    spam_keywords = ["unsubscribe", "promoção", "oferta", "compre agora", "newsletter", "black friday"]
-    if any(k in low_text for k in spam_keywords):
-        return EmailAIResult(
-            category="Improdutivo",
-            confidence=0.90,
-            short_reason="Indícios fortes de marketing/spam.",
-            suggested_reply="",
-        )
-
-    # Protocol pattern like #12345 or "protocolo 12345"
-    if re.search(r"#\d{2,}", text) or re.search(r"protocolo[:\s]*\d{2,}", low_text):
-        return EmailAIResult(
-            category="Produtivo",
-            confidence=0.95,
-            short_reason="Presença de protocolo identificado (#123 / protocolo 123).",
-            suggested_reply=(
-                "Obrigado pelo contato. Recebemos sua solicitação e vamos verificar. "
-                "Se possível, poderia confirmar melhores horários para contato?"
-            ),
-        )
-
-    # Palavras que indicam pedido/ação
-    request_keywords = [
-        "solicit", "pedido", "precis", "gostaria", "poderia", "por favor", "favor",
-        "necessito", "encaminhe", "anexo", "enviar", "agendar", "quando", "consulta",
-        "abrir chamado", "abrir ticket", "abrir protocolo", "preciso de", "alterar",
-        "cancelar", "reembolso", "cobrança", "pagamento"
+def _heuristic_classifier(text: str) -> EmailAIResult:
+    # palavras que usualmente indicam necessidade de ação/resposta (produtivo)
+    productive = [
+        "preciso", "solicito", "solicitação", "por favor", "favor",
+        "possível", "poderia", "gostaria", "urgente", "prazo", "entrega",
+        "reunião", "confirma", "confirmar", "anexo", "corrigir", "ajuda",
+        "erro", "problema", "falha", "reembolso", "pagamento", "vencido",
+        "orcamento", "cotação", "contrato", "assinatura", "aceite", "aceitar",
     ]
-    has_request = any(k in low_text for k in request_keywords)
+    # palavras que usualmente indicam comunicados/marketing/sem ação (improdutivo)
+    unproductive = [
+        "newsletter", "promoção", "oferta", "parabéns", "congrat", "bom dia",
+        "boa tarde", "resumo", "relatório", "informe", "apenas", "informamos",
+        "divulgação", "evento", "fatura", "boleto", "spam",
+    ]
 
-    # Palavras de suporte técnico que precisam de contexto para serem produtivas
-    support_words = ["suporte", "erro", "problema", "login", "acesso", "senha", "instal", "bug"]
-    has_support = any(k in low_text for k in support_words)
+    txt = text.lower()
+    score = 0
+    for w in productive:
+        if w in txt:
+            # incrementar mais para keywords críticas
+            score += 2 if w in ("urgente", "prazo", "erro", "problema") else 1
+    for w in unproductive:
+        if w in txt:
+            score -= 1
 
-    # Palavras que indicam reclamação sem pedido de ação
-    complaint_words = ["reclam", "insatisfeit", "não satisfaz", "não funciona", "lento", "demora"]
-    has_complaint = any(k in low_text for k in complaint_words)
+    # heurística final: ser conservador em marcar como produtivo
+    if score >= 2:
+        category = "Produtivo"
+    else:
+        category = "Improdutivo"
 
-    # Se há pedido claro -> Produtivo
-    if has_request:
-        # pedido curto com só "suporte" e sem números -> pedir detalhes
-        if has_support and len(low_text.split()) <= 6 and not re.search(r"\d", low_text):
-            return EmailAIResult(
-                category="Produtivo",
-                confidence=0.70,
-                short_reason="Pedido de suporte curto e sem detalhes; precisa de mais informações.",
-                suggested_reply=(
-                    "Olá! Para que possamos ajudar, poderia informar o número do protocolo (se houver), "
-                    "o horário do problema e qualquer mensagem de erro?"
-                ),
-            )
+    # confiança heurística: mapear magnitude do score para [0.55, 0.95]
+    conf = max(0.55, min(0.95, 0.5 + abs(score) * 0.15))
+    reason = f"Classificação heurística (score={score}). Palavras detectadas: produtivas={sum(1 for w in productive if w in txt)}, improdutivas={sum(1 for w in unproductive if w in txt)}"
+    suggested = "Olá! Obrigado pelo contato. Poderia, por favor, fornecer mais detalhes sobre o pedido para que possamos ajudar?" if category == "Produtivo" else "Obrigado pelo envio — registramos a informação para acompanhamento."
 
-        return EmailAIResult(
-            category="Produtivo",
-            confidence=0.90,
-            short_reason="Presença de pedido ou ação solicitada.",
-            suggested_reply=(
-                "Olá! Obrigado pelo contato — vamos verificar sua solicitação. "
-                "Poderia confirmar o número do protocolo ou enviar mais detalhes?"
-            ),
-        )
+    return EmailAIResult(category=category, confidence=round(conf, 2), short_reason=reason, suggested_reply=suggested)
 
-    # Menção a suporte sem pedido claro -> improdutivo, mas pede informação
-    if has_support:
-        return EmailAIResult(
-            category="Improdutivo",
-            confidence=0.65,
-            short_reason="Menção a suporte sem pedido ou dados suficientes.",
-            suggested_reply=(
-                "Olá! Vi que mencionou suporte. Para ajudar melhor, poderia descrever o problema e "
-                "incluir horários, mensagens de erro ou número do protocolo?"
-            ),
-        )
-
-    # Reclamação sem pedido de ação -> improdutivo (sugere informações)
-    if has_complaint:
-        return EmailAIResult(
-            category="Improdutivo",
-            confidence=0.80,
-            short_reason="Reclamação observada sem pedido de ação clara.",
-            suggested_reply=(
-                "Lamentamos o transtorno. Para que possamos analisar, poderia informar mais detalhes "
-                "e, se possível, o número do protocolo?"
-            ),
-        )
-
-    # Default conservador
+def _fallback_parse_error() -> EmailAIResult:
+    # Em caso de erro no parsing da resposta da API, optamos por marcar como Improdutivo
     return EmailAIResult(
         category="Improdutivo",
-        confidence=0.50,
-        short_reason="Sem evidência clara de solicitação; classificado como improdutivo por padrão conservador.",
-        suggested_reply="",
+        confidence=0.45,
+        short_reason="Falha ao interpretar resposta da API; classificado como improdutivo por segurança.",
+        suggested_reply="Obrigado pelo contato. Se precisar de ajuda, por favor, nos envie mais detalhes."
     )
 
-
-# ==============================
-# HEURÍSTICA RÁPIDA (antes de tudo)
-# ==============================
-def _quick_heuristic(email_text: str) -> Optional[EmailAIResult]:
+def _parse_openai_json(raw: str) -> EmailAIResult:
     """
-    Regras bem rápidas para evitar chamadas desnecessárias.
+    Tenta extrair JSON estrito da resposta do LLM. Aceitamos que o modelo
+    possa circundar o JSON com texto — buscamos o primeiro {...} válido.
     """
-    text = (email_text or "").strip().lower()
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not match:
+        raise ValueError("Nenhum JSON encontrado na resposta da API")
+    payload = match.group(0)
+    data = json.loads(payload)
+    return EmailAIResult(**data)
 
-    if len(text) < 5:
-        return EmailAIResult(
-            category="Improdutivo",
-            confidence=0.95,
-            short_reason="Mensagem vazia ou extremamente curta.",
-            suggested_reply="",
-        )
-
-    spam_keywords = ["unsubscribe", "promoção", "oferta", "black friday", "newsletter"]
-    if any(word in text for word in spam_keywords):
-        return EmailAIResult(
-            category="Improdutivo",
-            confidence=0.90,
-            short_reason="Indícios de spam ou conteúdo promocional.",
-            suggested_reply="",
-        )
-
-    return None
-
-
-# ==============================
-# FUNÇÃO PRINCIPAL
-# ==============================
 def analyse_with_openai(email_text: str) -> EmailAIResult:
     """
-    Fluxo:
-      1) heurística rápida
-      2) se não tem chave ou SDK -> classificador local
-      3) se tem OpenAI -> chamada ao modelo
-      4) valida com Pydantic e aplica regra defensiva de confiança
+    Função de entrada única para classificação. Tenta usar a API OpenAI se disponível
+    (variável OPENAI_API_KEY presente e cliente importado), e em caso de erro recorre
+    ao classificador heurístico local para garantir funcionamento sem IA.
     """
-    # 1) heurística rápida
-    heuristic_result = _quick_heuristic(email_text)
-    if heuristic_result:
-        return heuristic_result
-
-    # 2) verifica ambiente
-    api_key = os.getenv("OPENAI_API_KEY")
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-    # 3) se SDK não disponível ou não há chave, usa classificador local determinístico
-    if not _OPENAI_AVAILABLE or not api_key:
-        return _local_rule_based_classify(email_text)
-
-    # 4) tenta inicializar cliente de forma local (dentro da função)
-    try:
-        client = OpenAI(api_key=api_key)
-    except Exception:
-        # Se houver qualquer erro na inicialização do cliente, fallback para local
-        return _local_rule_based_classify(email_text)
-
-    # 5) prompt estruturado
-    user_prompt = f\"\"\"Classifique o e-mail conforme as regras:
-
-- Produtivo -> existe pedido claro, solicitação objetiva, protocolo (#123), necessidade de suporte com ação concreta.
-- Improdutivo -> spam, propaganda, reclamação vaga sem pedido específico, mensagem genérica sem ação necessária.
-
-IMPORTANTE:
-1. A palavra 'suporte' sozinha NÃO torna produtivo.
-2. Só classifique como Produtivo se houver necessidade real de resposta.
-3. Se faltar informação para executar a ação, continue classificando como Produtivo, mas peça os dados necessários.
-
-Responda APENAS com JSON válido:
-
-{{
-  "category": "Produtivo" ou "Improdutivo",
-  "confidence": número entre 0 e 1,
-  "short_reason": "Justificativa objetiva em 1 frase.",
-  "suggested_reply": "Resposta curta e profissional."
-}}
-
-E-mail:
-{email_text}
-\"\"\".strip()
-
-    try:
-        # 6) Chamada com JSON forçado (se suportado pelo SDK/model)
-        completion = client.chat.completions.create(
-            model=model,
-            temperature=0.1,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": _SYSTEM},
-                {"role": "user", "content": user_prompt},
-            ],
+    text = (email_text or "").strip()
+    if not text:
+        return EmailAIResult(
+            category="Improdutivo",
+            confidence=0.0,
+            short_reason="Texto vazio",
+            suggested_reply="Nenhum conteúdo encontrado no email."
         )
 
-        content = completion.choices[0].message.content or "{}"
-        data = json.loads(content)
-        result = EmailAIResult.model_validate(data)
-
-        # 7) Regra defensiva de confiança
-        if result.confidence < 0.60:
-            # comportamento de negócio: confiança baixa -> pedimos mais detalhes
-            return EmailAIResult(
-                category="Produtivo",
-                confidence=result.confidence,
-                short_reason="Confiança baixa na classificação; tratado como produtivo por segurança.",
-                suggested_reply=(
-                    "Olá! Poderia detalhar melhor sua solicitação ou informar o número do protocolo?"
-                ),
+    # 1) tentamos a rota OpenAI (se cliente e chave existirem)
+    if OPENAI_API_KEY and OpenAI is not None:
+        try:
+            client = OpenAI(api_key=OPENAI_API_KEY)
+            prompt = (
+                "Classifique o texto do email abaixo em uma das categorias: 'Produtivo' ou 'Improdutivo'.\n"
+                "Retorne apenas um objeto JSON com as chaves: category, confidence, short_reason, suggested_reply.\n"
+                "- category: 'Produtivo' ou 'Improdutivo'\n"
+                "- confidence: número entre 0.0 e 1.0\n"
+                "- short_reason: uma frase curta explicando a decisão\n"
+                "- suggested_reply: sugestão de resposta breve\n\n"
+                "Email:\n"
+                f"{text}\n\n"
+                "JSON:"
             )
+            # chamada defensiva: SDKs/versões podem variar; usamos responses.create se disponível
+            resp = client.responses.create(model="gpt-4o-mini", input=prompt, max_output_tokens=400)
+            raw = ""
+            if hasattr(resp, "output") and resp.output:
+                if isinstance(resp.output, list):
+                    for item in resp.output:
+                        if isinstance(item, dict) and "content" in item:
+                            for c in item["content"]:
+                                if isinstance(c, dict) and c.get("type") == "output_text":
+                                    raw += c.get("text", "")
+                                elif isinstance(c, str):
+                                    raw += c
+                else:
+                    raw = str(resp.output)
+            else:
+                raw = str(resp)
 
-        return result
+            try:
+                result = _parse_openai_json(raw)
+                # segurança: se confiança muito baixa, combinamos com heurística
+                if result.confidence < 0.5:
+                    heur = _heuristic_classifier(text)
+                    heur.short_reason = f"Resposta da API com baixa confiança ({result.confidence}); combinado com heurística."
+                    if heur.confidence >= 0.6 and heur.category == "Produtivo":
+                        return heur
+                    result.short_reason += " (confiança baixa — revisar)"
+                    return result
+                return result
+            except Exception:
+                return _fallback_parse_error()
+        except Exception:
+            # qualquer falha na API -> fallback heurístico
+            return _heuristic_classifier(text)
 
-    except (json.JSONDecodeError, ValidationError, KeyError, IndexError):
-        return _fallback_parse_error()
-    except Exception:
-        return _fallback_parse_error()
+    # 2) rota offline / fallback
+    return _heuristic_classifier(text)
