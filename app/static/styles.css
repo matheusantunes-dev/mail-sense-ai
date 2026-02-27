@@ -490,7 +490,7 @@ b {
     border-radius: 10px;
     border: 0;
     background: var(--white);
-    color: var(--black);
+    color: var(--white);
     font-weight: 800;
     font-size: 12px;
     cursor: pointer;
