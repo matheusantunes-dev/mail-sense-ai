@@ -23,7 +23,6 @@ class EmailAIResult(BaseModel):
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_KEY")
 
 def _heuristic_classifier(text: str) -> EmailAIResult:
-    # palavras que usualmente indicam necessidade de ação/resposta (produtivo)
     productive = [
         "preciso", "solicito", "solicitação", "por favor", "favor",
         "possível", "poderia", "gostaria", "urgente", "prazo", "entrega",
@@ -31,35 +30,51 @@ def _heuristic_classifier(text: str) -> EmailAIResult:
         "erro", "problema", "falha", "reembolso", "pagamento", "vencido",
         "orcamento", "cotação", "contrato", "assinatura", "aceite", "aceitar",
     ]
-    # palavras que usualmente indicam comunicados/marketing/sem ação (improdutivo)
+
     unproductive = [
-        "newsletter", "promoção", "oferta", "parabéns", "congrat", "bom dia",
-        "boa tarde", "resumo", "relatório", "informe", "apenas", "informamos",
-        "divulgação", "evento", "fatura", "boleto", "spam",
+        "newsletter", "promoção", "oferta", "parabéns", "congrat",
+        "resumo", "relatório", "informe", "divulgação", "evento", "spam",
     ]
 
     txt = text.lower()
     score = 0
+    productive_hits = 0
+    unproductive_hits = 0
+
     for w in productive:
         if w in txt:
-            # incrementar mais para keywords críticas
+            productive_hits += 1
             score += 2 if w in ("urgente", "prazo", "erro", "problema") else 1
+
     for w in unproductive:
         if w in txt:
+            unproductive_hits += 1
             score -= 1
 
-    # heurística final: ser conservador em marcar como produtivo
     if score >= 2:
         category = "Produtivo"
+        reason = "O conteúdo indica necessidade de ação, resposta ou acompanhamento."
+    elif score <= -1:
+        category = "Improdutivo"
+        reason = "O conteúdo aparenta ser informativo ou promocional, sem exigir ação direta."
     else:
         category = "Improdutivo"
+        reason = "Não foram identificados indícios claros de solicitação ou demanda objetiva."
 
-    # confiança heurística: mapear magnitude do score para [0.55, 0.95]
-    conf = max(0.55, min(0.95, 0.5 + abs(score) * 0.15))
-    reason = f"Classificação (score={score}). Palavras detectadas: produtivas={sum(1 for w in productive if w in txt)}, improdutivas={sum(1 for w in unproductive if w in txt)}"
-    suggested = "Olá! Obrigado pelo contato. Poderia, por favor, fornecer mais detalhes sobre o pedido para que possamos ajudar?" if category == "Produtivo" else "Obrigado pelo envio — registramos a informação para acompanhamento."
+    conf = max(0.55, min(0.9, 0.6 + abs(score) * 0.1))
 
-    return EmailAIResult(category=category, confidence=round(conf, 2), short_reason=reason, suggested_reply=suggested)
+    suggested = (
+        "Olá! Recebemos sua mensagem e estamos analisando a solicitação. Em breve retornaremos."
+        if category == "Produtivo"
+        else "Mensagem registrada para acompanhamento. Nenhuma ação imediata identificada."
+    )
+
+    return EmailAIResult(
+        category=category,
+        confidence=round(conf, 2),
+        short_reason=reason,
+        suggested_reply=suggested
+    )
 
 def _fallback_parse_error() -> EmailAIResult:
     # Em caso de erro no parsing da resposta da API, optamos por marcar como Improdutivo
