@@ -490,7 +490,7 @@ b {
     border-radius: 10px;
     border: 0;
     background: var(--white);
-    color: var(--white);
+    color: var(--black);
     font-weight: 800;
     font-size: 12px;
     cursor: pointer;
@@ -500,8 +500,6 @@ b {
 .button-small:hover {
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(255, 255, 255, 0.5);
-    /* Remove o !important e garante a transparência */
-    background: rgba(255, 255, 255, 1.02); 
 }
 
 .button-small:active {
