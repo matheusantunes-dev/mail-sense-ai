@@ -120,7 +120,18 @@ E-mail:
         data = json.loads(content)
 
         # Valida e normaliza no nosso modelo (garante tipo/limites/valores)
-        return EmailAIResult.model_validate(data)
+        result = EmailAIResult.model_validate(data)
+
+# Regra defensiva:
+if result.confidence < 0.60:
+    return EmailAIResult(
+        category="Produtivo",  # ou decide padrão do seu negócio
+        confidence=result.confidence,
+        short_reason="Confiança baixa na classificação; tratado como produtivo por segurança.",
+        suggested_reply="Olá! Poderia detalhar melhor sua solicitação, por favor?"
+    )
+
+return result
 
     except (json.JSONDecodeError, ValidationError, KeyError, IndexError):
         # JSON inválido, campos faltando, ou formato inesperado
