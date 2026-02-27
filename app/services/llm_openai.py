@@ -56,7 +56,7 @@ def _heuristic_classifier(text: str) -> EmailAIResult:
 
     # confiança heurística: mapear magnitude do score para [0.55, 0.95]
     conf = max(0.55, min(0.95, 0.5 + abs(score) * 0.15))
-    reason = f"Classificação heurística (score={score}). Palavras detectadas: produtivas={sum(1 for w in productive if w in txt)}, improdutivas={sum(1 for w in unproductive if w in txt)}"
+    reason = f"Classificação (score={score}). Palavras detectadas: produtivas={sum(1 for w in productive if w in txt)}, improdutivas={sum(1 for w in unproductive if w in txt)}"
     suggested = "Olá! Obrigado pelo contato. Poderia, por favor, fornecer mais detalhes sobre o pedido para que possamos ajudar?" if category == "Produtivo" else "Obrigado pelo envio — registramos a informação para acompanhamento."
 
     return EmailAIResult(category=category, confidence=round(conf, 2), short_reason=reason, suggested_reply=suggested)
