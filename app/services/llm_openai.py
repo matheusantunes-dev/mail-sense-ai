@@ -79,16 +79,23 @@ def analyse_with_openai(email_text: str) -> EmailAIResult:
     # A gente pede para a IA responder ESTRITAMENTE como JSON.
     # Isso facilita parse e deixa o sistema mais robusto.
     user_prompt = f"""
-Você vai analisar o e-mail abaixo.
-Também, caso houver algo sobre suporte, é classificado como "Produtivo", senão é "Improdutivo",
-caso houver um email curto, sobre suporte, sem informações de horários, protocolos, classifique como "Produtivo" e
-dê uma resposta breve perguntando horário, protocolo, etc, caso não houver estas informações no email, peça as iformações, e se tiver algo sobre solicitação e um numeor seguido de #, classifique como "Produtivo" .
-Responda APENAS com um JSON válido (sem texto fora do JSON), seguindo este formato:
+Classifique o e-mail como:
+
+- "Produtivo" → quando houver pedido real, solicitação clara, protocolo (#123), dados de suporte ou necessidade de ação.
+- "Improdutivo" → quando for reclamação vaga, spam, propaganda, mensagem genérica, sem pedido concreto ou ação necessária.
+
+Regras importantes:
+1. A palavra "suporte" sozinha NÃO torna o e-mail produtivo.
+2. Só é Produtivo se houver necessidade real de resposta ou ação.
+3. Se faltar informação para executar a ação, ainda é Produtivo — mas peça os dados necessários.
+
+Responda APENAS com JSON válido:
+
 {{
   "category": "Produtivo" ou "Improdutivo",
   "confidence": número entre 0 e 1,
-  "short_reason": "1 Resposta tamanho médio, com no final agradecimentos e o tempo de aguardo de  até 24h",
-  "suggested_reply": "resposta curta, educada e pronta para enviar"
+  "short_reason": "Justificativa objetiva em 1 frase.",
+  "suggested_reply": "Resposta curta e profissional."
 }}
 
 E-mail:
