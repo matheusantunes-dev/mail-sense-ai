@@ -499,7 +499,7 @@ b {
 
 .button-small:hover {
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(255, 255, 255, 0.2);
+    box-shadow: 0 4px 12px rgba(255, 255, 255, 1,5);
 }
 
 .button-small:active {
