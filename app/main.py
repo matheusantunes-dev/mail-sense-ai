@@ -17,55 +17,81 @@ load_dotenv()
 
 app = FastAPI(title="MailSense AI")
 
-# Mount static directory relative to this file
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 static_dir = os.path.join(BASE_DIR, "static")
 templates_dir = os.path.join(BASE_DIR, "templates")
 
-if not os.path.isdir(static_dir):
-    # evitar erro no deploy se caminho errado
-    static_dir = os.path.join(os.getcwd(), "app", "static")
-
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 templates = Jinja2Templates(directory=templates_dir)
 
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    """Página inicial com formulário simples."""
     return templates.TemplateResponse("index.html", {"request": request})
 
-@app.post("/analyse", response_class=HTMLResponse)
-async def analyse(request: Request, email_text: str = Form(None), file: UploadFile | None = File(None)):
-    """
-    Endpoint principal:
-    - aceita campo de texto 'email_text' ou arquivo 'file'
-    - extrai texto via extract_email_text
-    - chama analyse_with_openai (que internamente faz fallback heurístico)
-    - devolve template com resultado
-    """
+
+# 🔹 Função interna reutilizável (boa prática)
+async def _handle_analyse(request: Request, email_text: str | None, file: UploadFile | None):
     try:
         email_raw = await extract_email_text(raw_text=email_text, uploaded_file=file)
+
         if not email_raw:
             return templates.TemplateResponse(
                 "result.html",
-                {"request": request, "error": "Nenhum conteúdo extraído do email.", "result": None, "email_preview": ""},
+                {
+                    "request": request,
+                    "error": "Nenhum conteúdo extraído do email.",
+                    "result": None,
+                    "email_preview": "",
+                },
             )
+
         result = analyse_with_openai(email_raw)
+
         return templates.TemplateResponse(
             "result.html",
-            {"request": request, "error": None, "result": result, "email_preview": email_raw[:1500]},
-        )
-    except Exception as exc:
-        # registrar stacktrace nos logs (importante para debug no Vercel)
-        tb = traceback.format_exc()
-        print("Erro em /analyse:", tb, file=sys.stderr)
-        # retornar resposta amigável sem crashar a função
-        return templates.TemplateResponse(
-            "result.html",
-            {"request": request, "error": "Erro interno ao processar (veja logs).", "result": None, "email_preview": ""},
+            {
+                "request": request,
+                "error": None,
+                "result": result,
+                "email_preview": email_raw[:1500],
+            },
         )
 
-# rota healthcheck simples
+    except Exception:
+        tb = traceback.format_exc()
+        print("Erro em análise:", tb, file=sys.stderr)
+
+        return templates.TemplateResponse(
+            "result.html",
+            {
+                "request": request,
+                "error": "Erro interno ao processar (veja logs).",
+                "result": None,
+                "email_preview": "",
+            },
+        )
+
+
+# 🔹 Aceita as duas rotas (analyze e analyse)
+@app.post("/analyse", response_class=HTMLResponse)
+async def analyse_br(
+    request: Request,
+    email_text: str = Form(None),
+    file: UploadFile | None = File(None),
+):
+    return await _handle_analyse(request, email_text, file)
+
+
+@app.post("/analyze", response_class=HTMLResponse)
+async def analyse_us(
+    request: Request,
+    email_text: str = Form(None),
+    file: UploadFile | None = File(None),
+):
+    return await _handle_analyse(request, email_text, file)
+
+
 @app.get("/health", response_class=PlainTextResponse)
 def health():
     return "ok"
