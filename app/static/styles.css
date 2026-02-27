@@ -500,7 +500,8 @@ b {
 .button-small:hover {
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(255, 255, 255, 0.5);
-    background: rgba(255, 255, 255, 0.5) !important;
+    /* Remove o !important e garante a transparência */
+    background: rgba(255, 255, 255, 0.5); 
 }
 
 .button-small:active {
