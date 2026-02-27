@@ -1,29 +1,27 @@
+# app/services/preprocess.py
 from __future__ import annotations
 
 import re
-from nltk.corpus import stopwords
-from nltk.stem.snowball import SnowballStemmer
+import unicodedata
 
-
-_whithespace_re = re.compile(r"\s+")
+_whitespace_re = re.compile(r"\s+")
 _non_word_re = re.compile(r"[^\wÀ-ÿ]+", re.UNICODE)
 
+def _strip_accents(text: str) -> str:
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join([c for c in nfkd if not unicodedata.combining(c)])
 
 def preprocess_pt(text: str) -> str:
     """
-    Pré-processamento clássico (pedido no desafio):
-    - lower
-    - remove pontuação “pesada”
-    - remove stopwords
-    - stemming (radicalização)
+    Pré-processamento simples e robusto sem dependências externas:
+    - normaliza para lower
+    - remove excesso de whitespace
+    - remove caracteres não-palavra mantendo letras acentuadas
     """
-    text =  (text or "").lower()
-    text = _non_word_re.sub(" ", text)
-    text = _whithespace_re.sub(" ", text).strip()
-    
-    words =  text.split(" ")
-    sw = set(stopwords.words("portuguese"))
-    stemmer = SnowballStemmer("portuguese")
-
-    cleaned = [stemmer.stem(w) for w in words if w and w not in sw and len(w) > 2]
-    return " ".join(cleaned)
+    if not text:
+        return ""
+    s = text.lower()
+    s = _whitespace_re.sub(" ", s).strip()
+    s = _non_word_re.sub(" ", s)
+    s = _whitespace_re.sub(" ", s).strip()
+    return s
